@@ -19,7 +19,7 @@
 #define MAX_STR 256
 
 typedef struct {
-    unsigned int id;           // unique event id
+    unsigned int id;         // unique event id
     char title[MAX_STR];
     char date[11];   // "YYYY-MM-DD"
     char time[6];    // "HH:MM"

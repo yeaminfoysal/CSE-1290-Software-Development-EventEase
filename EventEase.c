@@ -1,555 +1,831 @@
-/* eventease.c
-   EventEase - Event Management System (single-file C implementation)
-   Features:
-   - Add/View/Edit/Delete/Search/Sort events
-   - Admin & Guest roles (hardcoded admin password)
-   - Save/load events to/from a binary file "events.dat"
-   - Upcoming events using time.h
-   - Event summary (counts per day/month/year)
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
 
-#define DATA_FILE "events.dat"
-#define ADMIN_PASSWORD "admin123"
-#define MAX_STR 256
+#define MAX_EVENTS 100
+#define MAX_TITLE_LEN 100
+#define MAX_LOCATION_LEN 100
+#define MAX_DESCRIPTION_LEN 200
+#define FILENAME "events.txt"
+#define ADMIN_PASSWORD "admin123" // Default admin password
 
-typedef struct {
-    unsigned int id;         // unique event id
-    char title[MAX_STR];
-    char date[11];   // "YYYY-MM-DD"
-    char time[6];    // "HH:MM"
-    char location[MAX_STR];
-    char description[512];
+typedef struct
+{
+    int id;
+    char title[MAX_TITLE_LEN];
+    char date[11]; // YYYY-MM-DD format
+    char time[6];  // HH:MM format
+    char description[MAX_DESCRIPTION_LEN];
+    char location[MAX_LOCATION_LEN];
 } Event;
 
-typedef struct {
-    Event *arr;
-    size_t size;
-    size_t capacity;
-    unsigned int next_id;
-} EventList;
+Event events[MAX_EVENTS];
+int eventCount = 0;
+int isAdmin = 0; // 0 for guest, 1 for admin
 
-/* ---------- Utility functions ---------- */
+// Function prototypes
+void login();
+void displayMenu();
+void addEvent();
+void viewEvents();
+void editEvent();
+void deleteEvent();
+void searchEvents();
+void saveEvents();
+void loadEvents();
+void sortEvents();
+void eventSummary();
+int validateDate(const char *date);
+int validateTime(const char *time);
+int compareDates(const char *date1, const char *date2);
+void toLowerCase(char *str);
+int isLeapYear(int year);
+int isValidDate(int day, int month, int year);
+void clearInputBuffer();
 
-void strip_newline(char *s) {
-    if (!s) return;
-    size_t n = strlen(s);
-    if (n == 0) return;
-    if (s[n-1] == '\n') s[n-1] = '\0';
-}
+int main()
+{
+    loadEvents();
+    login();
 
-/* safe getline-like for stdin using fgets */
-void read_line(const char *prompt, char *out, size_t out_size) {
-    if (prompt) {
-        printf("%s", prompt);
-        fflush(stdout);
-    }
-    if (fgets(out, (int)out_size, stdin) != NULL) {
-        strip_newline(out);
-    } else {
-        /* EOF or error - set empty */
-        out[0] = '\0';
-    }
-}
-
-/* Case-insensitive substring search */
-int contains_case_insensitive(const char *hay, const char *needle) {
-    if (!hay || !needle) return 0;
-    size_t H = strlen(hay), N = strlen(needle);
-    if (N == 0) return 1;
-    for (size_t i = 0; i + N <= H; ++i) {
-        size_t j;
-        for (j = 0; j < N; ++j) {
-            if (tolower((unsigned char)hay[i+j]) != tolower((unsigned char)needle[j])) break;
+    int choice;
+    do
+    {
+        displayMenu();
+        printf("Enter your choice: ");
+        if (scanf("%d", &choice) != 1)
+        {
+            printf("Invalid input! Please enter a number.\n");
+            clearInputBuffer();
+            continue;
         }
-        if (j == N) return 1;
-    }
-    return 0;
-}
+        clearInputBuffer(); // Consume newline and any extra characters
 
-/* parse "YYYY-MM-DD" and "HH:MM" into struct tm; returns 0 on success */
-int parse_datetime(const char *date, const char *time_s, struct tm *out_tm) {
-    if (!date || !time_s || !out_tm) return -1;
-    int y, m, d, hh, mm;
-    if (sscanf(date, "%4d-%2d-%2d", &y, &m, &d) != 3) return -1;
-    if (sscanf(time_s, "%2d:%2d", &hh, &mm) != 2) return -1;
-    memset(out_tm, 0, sizeof(struct tm));
-    out_tm->tm_year = y - 1900;
-    out_tm->tm_mon  = m - 1;
-    out_tm->tm_mday = d;
-    out_tm->tm_hour = hh;
-    out_tm->tm_min  = mm;
-    out_tm->tm_sec  = 0;
-    out_tm->tm_isdst = -1;
-    return 0;
-}
-
-/* compare two events by datetime (for sorting) */
-int compare_event_datetime(const void *a, const void *b) {
-    const Event *ea = a;
-    const Event *eb = b;
-    struct tm ta, tb;
-    if (parse_datetime(ea->date, ea->time, &ta) == 0 && parse_datetime(eb->date, eb->time, &tb) == 0) {
-        time_t ta_t = mktime(&ta);
-        time_t tb_t = mktime(&tb);
-        if (ta_t < tb_t) return -1;
-        if (ta_t > tb_t) return 1;
-        return 0;
-    }
-    /* fallback alphabetical by date string */
-    int r = strcmp(ea->date, eb->date);
-    if (r != 0) return r;
-    return strcmp(ea->time, eb->time);
-}
-
-/* compare by title */
-int compare_event_title(const void *a, const void *b) {
-    const Event *ea = a; const Event *eb = b;
-    return strcasecmp(ea->title, eb->title);
-}
-
-/* compare by location */
-int compare_event_location(const void *a, const void *b) {
-    const Event *ea = a; const Event *eb = b;
-    return strcasecmp(ea->location, eb->location);
-}
-
-/* ---------- EventList management ---------- */
-
-void init_event_list(EventList *lst) {
-    lst->arr = NULL;
-    lst->size = 0;
-    lst->capacity = 0;
-    lst->next_id = 1;
-}
-
-void free_event_list(EventList *lst) {
-    free(lst->arr);
-    lst->arr = NULL;
-    lst->size = lst->capacity = 0;
-}
-
-void ensure_capacity(EventList *lst, size_t min_cap) {
-    if (lst->capacity >= min_cap) return;
-    size_t newcap = lst->capacity ? lst->capacity * 2 : 8;
-    while (newcap < min_cap) newcap *= 2;
-    Event *tmp = realloc(lst->arr, newcap * sizeof(Event));
-    if (!tmp) {
-        perror("realloc");
-        exit(EXIT_FAILURE);
-    }
-    lst->arr = tmp;
-    lst->capacity = newcap;
-}
-
-Event *find_event_by_id(EventList *lst, unsigned int id) {
-    for (size_t i = 0; i < lst->size; ++i) {
-        if (lst->arr[i].id == id) return &lst->arr[i];
-    }
-    return NULL;
-}
-
-/* ---------- File I/O ---------- */
-
-int save_events(EventList *lst) {
-    FILE *f = fopen(DATA_FILE, "wb");
-    if (!f) {
-        perror("fopen for write");
-        return -1;
-    }
-    /* Write header: next_id and count */
-    if (fwrite(&lst->next_id, sizeof(lst->next_id), 1, f) != 1) { fclose(f); return -1; }
-    size_t count = lst->size;
-    if (fwrite(&count, sizeof(count), 1, f) != 1) { fclose(f); return -1; }
-    if (count > 0) {
-        if (fwrite(lst->arr, sizeof(Event), count, f) != count) { fclose(f); return -1; }
-    }
-    fclose(f);
-    return 0;
-}
-
-int load_events(EventList *lst) {
-    FILE *f = fopen(DATA_FILE, "rb");
-    if (!f) {
-        /* no file yet - that's ok */
-        return 0;
-    }
-    unsigned int next_id = 1;
-    size_t count = 0;
-    if (fread(&next_id, sizeof(next_id), 1, f) != 1) { fclose(f); return -1; }
-    if (fread(&count, sizeof(count), 1, f) != 1) { fclose(f); return -1; }
-    if (count > 0) {
-        ensure_capacity(lst, count);
-        if (fread(lst->arr, sizeof(Event), count, f) != count) { fclose(f); return -1; }
-        lst->size = count;
-    }
-    lst->next_id = next_id;
-    fclose(f);
-    return 0;
-}
-
-/* ---------- UI helpers ---------- */
-
-void print_event_header() {
-    printf("--------------------------------------------------------------------------------\n");
-    printf("| ID  |     Date    | Time  | %-20s | %-12s |\n", "Title", "Location");
-    printf("--------------------------------------------------------------------------------\n");
-}
-
-void print_event_row(const Event *e) {
-    char title_short[21] = {0}, loc_short[13] = {0};
-    strncpy(title_short, e->title, 20);
-    strncpy(loc_short, e->location, 12);
-    printf("| %3u | %10s | %5s | %-20s | %-12s |\n", e->id, e->date, e->time, title_short, loc_short);
-}
-
-/* ---------- Core features ---------- */
-
-void add_event(EventList *lst) {
-    Event tmp;
-    char buf[MAX_STR];
-    printf("\n-- Add New Event (Admin) --\n");
-
-    read_line("Title: ", tmp.title, sizeof(tmp.title));
-    if (strlen(tmp.title) == 0) {
-        puts("Title cannot be empty. Cancelled.");
-        return;
-    }
-
-    while (1) {
-        read_line("Date (YYYY-MM-DD): ", tmp.date, sizeof(tmp.date));
-        struct tm t;
-        if (parse_datetime(tmp.date, "00:00", &t) == 0) break;
-        puts("Invalid date format. Try again.");
-    }
-
-    while (1) {
-        read_line("Time (HH:MM): ", tmp.time, sizeof(tmp.time));
-        /* simple validation */
-        int hh, mm;
-        if (sscanf(tmp.time, "%2d:%2d", &hh, &mm) == 2 && hh >= 0 && hh < 24 && mm >= 0 && mm < 60) break;
-        puts("Invalid time format. Try again.");
-    }
-
-    read_line("Location: ", tmp.location, sizeof(tmp.location));
-    read_line("Description: ", tmp.description, sizeof(tmp.description));
-
-    /* assign id */
-    tmp.id = lst->next_id++;
-    ensure_capacity(lst, lst->size + 1);
-    lst->arr[lst->size++] = tmp;
-
-    if (save_events(lst) == 0) {
-        printf("Event added and saved with ID %u.\n", tmp.id);
-    } else {
-        puts("Event added but failed to save to disk.");
-    }
-}
-
-void view_all_events(EventList *lst) {
-    if (lst->size == 0) {
-        puts("\nNo events available.\n");
-        return;
-    }
-    printf("\n-- All Events (%zu) --\n", lst->size);
-    print_event_header();
-    for (size_t i = 0; i < lst->size; ++i) {
-        print_event_row(&lst->arr[i]);
-    }
-    printf("--------------------------------------------------------------------------------\n\n");
-}
-
-void show_event_details(const Event *e) {
-    if (!e) return;
-    printf("\n--- Event Details (ID %u) ---\n", e->id);
-    printf("Title      : %s\n", e->title);
-    printf("Date       : %s\n", e->date);
-    printf("Time       : %s\n", e->time);
-    printf("Location   : %s\n", e->location);
-    printf("Description: %s\n", e->description);
-    printf("-------------------------------\n");
-}
-
-void edit_event(EventList *lst) {
-    char buf[64];
-    read_line("Enter Event ID to edit: ", buf, sizeof(buf));
-    unsigned int id = (unsigned int)atoi(buf);
-    Event *e = find_event_by_id(lst, id);
-    if (!e) { printf("No event with ID %u\n", id); return; }
-    show_event_details(e);
-    printf("Press ENTER to keep current value.\n");
-
-    char tmp[MAX_STR];
-    read_line("New Title: ", tmp, sizeof(tmp));
-    if (strlen(tmp) > 0) strncpy(e->title, tmp, sizeof(e->title));
-
-    read_line("New Date (YYYY-MM-DD): ", tmp, sizeof(tmp));
-    if (strlen(tmp) > 0) {
-        struct tm t; if (parse_datetime(tmp, "00:00", &t) == 0) strncpy(e->date, tmp, sizeof(e->date));
-        else puts("Invalid date format; keeping old.");
-    }
-
-    read_line("New Time (HH:MM): ", tmp, sizeof(tmp));
-    if (strlen(tmp) > 0) {
-        int hh, mm;
-        if (sscanf(tmp, "%2d:%2d", &hh, &mm) == 2 && hh>=0 && hh<24 && mm>=0 && mm<60) strncpy(e->time, tmp, sizeof(e->time));
-        else puts("Invalid time format; keeping old.");
-    }
-
-    read_line("New Location: ", tmp, sizeof(tmp));
-    if (strlen(tmp) > 0) strncpy(e->location, tmp, sizeof(e->location));
-
-    read_line("New Description: ", tmp, sizeof(tmp));
-    if (strlen(tmp) > 0) strncpy(e->description, tmp, sizeof(e->description));
-
-    if (save_events(lst) == 0) puts("Event updated and saved.");
-    else puts("Event updated but failed to save.");
-}
-
-void delete_event(EventList *lst) {
-    char buf[64];
-    read_line("Enter Event ID to delete: ", buf, sizeof(buf));
-    unsigned int id = (unsigned int)atoi(buf);
-    size_t idx = (size_t)-1;
-    for (size_t i = 0; i < lst->size; ++i) if (lst->arr[i].id == id) { idx = i; break; }
-    if (idx == (size_t)-1) { printf("No event with ID %u\n", id); return; }
-    show_event_details(&lst->arr[idx]);
-    read_line("Type YES to confirm deletion: ", buf, sizeof(buf));
-    if (strcmp(buf, "YES") == 0) {
-        /* shift */
-        for (size_t i = idx + 1; i < lst->size; ++i) lst->arr[i-1] = lst->arr[i];
-        lst->size--;
-        if (save_events(lst) == 0) puts("Event deleted and saved.");
-        else puts("Event deleted but failed to save.");
-    } else {
-        puts("Deletion cancelled.");
-    }
-}
-
-/* Search helpers */
-void search_by_date(EventList *lst) {
-    char date[16];
-    read_line("Enter date (YYYY-MM-DD): ", date, sizeof(date));
-    if (strlen(date) == 0) { puts("No date entered."); return; }
-    int found = 0;
-    print_event_header();
-    for (size_t i = 0; i < lst->size; ++i) {
-        if (strcmp(lst->arr[i].date, date) == 0) {
-            print_event_row(&lst->arr[i]);
-            found = 1;
-        }
-    }
-    if (!found) puts("No events on that date.");
-    else printf("--------------------------------------------------------------------------------\n");
-}
-
-void search_by_name(EventList *lst) {
-    char q[128];
-    read_line("Enter name/title to search: ", q, sizeof(q));
-    if (strlen(q)==0) return;
-    int found = 0;
-    print_event_header();
-    for (size_t i = 0; i < lst->size; ++i) {
-        if (contains_case_insensitive(lst->arr[i].title, q)) { print_event_row(&lst->arr[i]); found = 1; }
-    }
-    if (!found) puts("No matching events found.");
-    else printf("--------------------------------------------------------------------------------\n");
-}
-
-void search_by_location(EventList *lst) {
-    char q[128];
-    read_line("Enter location to search: ", q, sizeof(q));
-    if (strlen(q)==0) return;
-    int found = 0;
-    print_event_header();
-    for (size_t i = 0; i < lst->size; ++i) {
-        if (contains_case_insensitive(lst->arr[i].location, q)) { print_event_row(&lst->arr[i]); found = 1; }
-    }
-    if (!found) puts("No matching events found.");
-    else printf("--------------------------------------------------------------------------------\n");
-}
-
-/* Sorting options */
-void sort_events(EventList *lst) {
-    if (lst->size == 0) { puts("No events to sort."); return; }
-    puts("Sort by:\n1) Date/Time\n2) Alphabetical (Name)\n3) Location\nChoose (1-3): ");
-    char opt[8]; read_line("> ", opt, sizeof(opt));
-    int o = atoi(opt);
-    if (o == 1) qsort(lst->arr, lst->size, sizeof(Event), compare_event_datetime);
-    else if (o == 2) qsort(lst->arr, lst->size, sizeof(Event), compare_event_title);
-    else if (o == 3) qsort(lst->arr, lst->size, sizeof(Event), compare_event_location);
-    else { puts("Invalid choice."); return; }
-    if (save_events(lst) == 0) puts("Sorted and saved.");
-    else puts("Sorted but save failed.");
-}
-
-/* Event summary */
-void event_summary(EventList *lst) {
-    printf("\n-- Event Summary --\nTotal events: %zu\n", lst->size);
-    if (lst->size == 0) return;
-
-    /* Count by date (simple approach using temporary arrays) */
-    /* We'll create a dynamic list of strings for unique dates and counts */
-    char **dates = NULL;
-    size_t *counts = NULL;
-    size_t unique = 0;
-
-    for (size_t i = 0; i < lst->size; ++i) {
-        char *d = lst->arr[i].date;
-        size_t j;
-        for (j = 0; j < unique; ++j) if (strcmp(dates[j], d) == 0) break;
-        if (j < unique) counts[j]++;
-        else {
-            dates = realloc(dates, (unique+1)*sizeof(char*));
-            counts = realloc(counts, (unique+1)*sizeof(size_t));
-            dates[unique] = strdup(d);
-            counts[unique] = 1;
-            unique++;
-        }
-    }
-    printf("\nEvents by date:\n");
-    for (size_t i = 0; i < unique; ++i) {
-        printf("  %s : %zu\n", dates[i], counts[i]);
-        free(dates[i]);
-    }
-    free(dates); free(counts);
-}
-
-/* Upcoming events: events with datetime > now */
-void upcoming_events(EventList *lst) {
-    time_t now = time(NULL);
-    int found = 0;
-    print_event_header();
-    for (size_t i = 0; i < lst->size; ++i) {
-        struct tm tm_e;
-        if (parse_datetime(lst->arr[i].date, lst->arr[i].time, &tm_e) == 0) {
-            time_t t_event = mktime(&tm_e);
-            if (t_event > now) { print_event_row(&lst->arr[i]); found = 1; }
-        }
-    }
-    if (!found) puts("No upcoming events.");
-    else printf("--------------------------------------------------------------------------------\n");
-}
-
-/* show details by ID (for both users) */
-void view_event_by_id(EventList *lst) {
-    char buf[64];
-    read_line("Enter event ID to view details: ", buf, sizeof(buf));
-    unsigned int id = (unsigned int)atoi(buf);
-    Event *e = find_event_by_id(lst, id);
-    if (!e) { puts("Event not found."); return; }
-    show_event_details(e);
-}
-
-/* ---------- Menus and main loop ---------- */
-
-void admin_menu(EventList *lst) {
-    for (;;) {
-        puts("\n--- Admin Menu ---");
-        puts("1) Add Event");
-        puts("2) View All Events");
-        puts("3) View Event Details (by ID)");
-        puts("4) Edit Event");
-        puts("5) Delete Event");
-        puts("6) Search Events");
-        puts("7) Sort Events");
-        puts("8) Upcoming Events");
-        puts("9) Event Summary");
-        puts("0) Logout");
-        char opt[8]; read_line("Choose: ", opt, sizeof(opt));
-        int c = atoi(opt);
-        switch (c) {
-            case 1: add_event(lst); break;
-            case 2: view_all_events(lst); break;
-            case 3: view_event_by_id(lst); break;
-            case 4: edit_event(lst); break;
-            case 5: delete_event(lst); break;
-            case 6:
-                puts("Search by:\n1) Date\n2) Name\n3) Location");
-                read_line("> ", opt, sizeof(opt));
-                if (atoi(opt) == 1) search_by_date(lst);
-                else if (atoi(opt) == 2) search_by_name(lst);
-                else if (atoi(opt) == 3) search_by_location(lst);
-                else puts("Invalid.");
-                break;
-            case 7: sort_events(lst); break;
-            case 8: upcoming_events(lst); break;
-            case 9: event_summary(lst); break;
-            case 0: return;
-            default: puts("Invalid choice.");
-        }
-    }
-}
-
-void guest_menu(EventList *lst) {
-    for (;;) {
-        puts("\n--- Guest Menu ---");
-        puts("1) View All Events");
-        puts("2) View Event Details (by ID)");
-        puts("3) Search Events");
-        puts("4) Upcoming Events");
-        puts("0) Logout");
-        char opt[8]; read_line("Choose: ", opt, sizeof(opt));
-        int c = atoi(opt);
-        switch (c) {
-            case 1: view_all_events(lst); break;
-            case 2: view_event_by_id(lst); break;
-            case 3:
-                puts("Search by:\n1) Date\n2) Name\n3) Location");
-                read_line("> ", opt, sizeof(opt));
-                if (atoi(opt) == 1) search_by_date(lst);
-                else if (atoi(opt) == 2) search_by_name(lst);
-                else if (atoi(opt) == 3) search_by_location(lst);
-                else puts("Invalid.");
-                break;
-            case 4: upcoming_events(lst); break;
-            case 0: return;
-            default: puts("Invalid choice.");
-        }
-    }
-}
-
-int main(void) {
-    EventList lst;
-    init_event_list(&lst);
-    if (load_events(&lst) != 0) {
-        puts("Warning: failed to load events file.");
-    } else {
-        printf("Loaded %zu events. Next event id: %u\n", lst.size, lst.next_id);
-    }
-
-    puts("Welcome to EventEase - Event Management System");
-    for (;;) {
-        puts("\nMain Menu:");
-        puts("1) Admin Login");
-        puts("2) Continue as Guest");
-        puts("0) Exit");
-        char opt[32]; read_line("Choose: ", opt, sizeof(opt));
-        int c = atoi(opt);
-        if (c == 1) {
-            char pw[128];
-            read_line("Enter admin password: ", pw, sizeof(pw));
-            if (strcmp(pw, ADMIN_PASSWORD) == 0) {
-                puts("Admin access granted.");
-                admin_menu(&lst);
-            } else {
-                puts("Incorrect password.");
-            }
-        } else if (c == 2) {
-            guest_menu(&lst);
-        } else if (c == 0) {
-            puts("Exiting. Goodbye!");
+        switch (choice)
+        {
+        case 1:
+            if (isAdmin)
+                addEvent();
+            else
+                printf("Access denied! Admin only feature.\n");
             break;
-        } else {
-            puts("Invalid choice.");
+        case 2:
+            viewEvents();
+            break;
+        case 3:
+            if (isAdmin)
+                editEvent();
+            else
+                printf("Access denied! Admin only feature.\n");
+            break;
+        case 4:
+            if (isAdmin)
+                deleteEvent();
+            else
+                printf("Access denied! Admin only feature.\n");
+            break;
+        case 5:
+            searchEvents();
+            break;
+        case 6:
+            if (isAdmin)
+                sortEvents();
+            else
+                printf("Access denied! Admin only feature.\n");
+            break;
+        case 7:
+            eventSummary();
+            break;
+        case 8:
+            login();
+            break;
+        case 9:
+            saveEvents();
+            printf("Exiting program. Goodbye!\n");
+            break;
+        default:
+            printf("Invalid choice! Please try again.\n");
+        }
+        printf("\nPress Enter to continue...");
+        clearInputBuffer();
+    } while (choice != 9);
+
+    return 0;
+}
+
+void clearInputBuffer()
+{
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+void login()
+{
+    char password[50];
+    printf("=== EventEase Login ===\n");
+    printf("Enter admin password (or press Enter for guest access): ");
+    fgets(password, sizeof(password), stdin);
+    password[strcspn(password, "\n")] = 0; // Remove newline
+
+    if (strcmp(password, ADMIN_PASSWORD) == 0)
+    {
+        isAdmin = 1;
+        printf("Admin access granted!\n");
+    }
+    else
+    {
+        isAdmin = 0;
+        printf("Guest access granted.\n");
+    }
+}
+
+void displayMenu()
+{
+    printf("\n=== EventEase - Event Management System ===\n");
+    printf("1. Add New Event (Admin Only)\n");
+    printf("2. View All Events\n");
+    printf("3. Edit an Event (Admin Only)\n");
+    printf("4. Delete an Event (Admin Only)\n");
+    printf("5. Search Events\n");
+    printf("6. Sort Events (Admin Only)\n");
+    printf("7. Event Summary\n");
+    printf("8. Switch User\n");
+    printf("9. Exit\n");
+}
+
+void addEvent()
+{
+    if (eventCount >= MAX_EVENTS)
+    {
+        printf("Event storage full! Cannot add more events.\n");
+        return;
+    }
+
+    Event newEvent;
+    newEvent.id = eventCount > 0 ? events[eventCount - 1].id + 1 : 1;
+
+    printf("Enter event title: ");
+    fgets(newEvent.title, sizeof(newEvent.title), stdin);
+    newEvent.title[strcspn(newEvent.title, "\n")] = 0;
+
+    printf("Enter event description: ");
+    fgets(newEvent.description, sizeof(newEvent.description), stdin);
+    newEvent.description[strcspn(newEvent.description, "\n")] = 0;
+
+    printf("Enter event location: ");
+    fgets(newEvent.location, sizeof(newEvent.location), stdin);
+    newEvent.location[strcspn(newEvent.location, "\n")] = 0;
+
+    do
+    {
+        printf("Enter event date (YYYY-MM-DD): ");
+        fgets(newEvent.date, sizeof(newEvent.date), stdin);
+        newEvent.date[strcspn(newEvent.date, "\n")] = 0;
+    } while (!validateDate(newEvent.date));
+
+    do
+    {
+        printf("Enter event time (HH:MM): ");
+        fgets(newEvent.time, sizeof(newEvent.time), stdin);
+        newEvent.time[strcspn(newEvent.time, "\n")] = 0;
+    } while (!validateTime(newEvent.time));
+
+    events[eventCount++] = newEvent;
+    saveEvents();
+    printf("Event added successfully with ID: %d\n", newEvent.id);
+}
+
+void viewEvents()
+{
+    if (eventCount == 0)
+    {
+        printf("No events to display.\n");
+        return;
+    }
+
+    printf("\n=== All Events ===\n");
+    printf("ID    Title                  Date         Time   Location   Description\n");
+    printf("-----------------------------------------------------------------------\n");
+    for (int i = 0; i < eventCount; i++)
+    {
+        printf("%-5d %-22s %-12s %-6s %-10s %s\n",
+               events[i].id,
+               events[i].title,
+               events[i].date,
+               events[i].time,
+               events[i].location,
+               events[i].description);
+    }
+
+    // REMOVE THIS PART - it's causing the input buffer issue
+    /*
+    printf("\nWould you like to see detailed descriptions? (y/n): ");
+    char choice;
+    scanf("%c", &choice);
+    clearInputBuffer();
+
+    if(choice == 'y' || choice == 'Y') {
+        printf("\n=== Event Details ===\n");
+        for(int i = 0; i < eventCount; i++) {
+            printf("\nID: %d\nTitle: %s\nDate: %s\nTime: %s\nLocation: %s\nDescription: %s\n",
+                   events[i].id, events[i].title, events[i].date,
+                   events[i].time, events[i].location, events[i].description);
+            printf("----------------------------------------\n");
+        }
+    }
+    */
+}
+
+void editEvent()
+{
+    if (eventCount == 0)
+    {
+        printf("No events to edit.\n");
+        return;
+    }
+
+    int id;
+    printf("Enter event ID to edit: ");
+    if (scanf("%d", &id) != 1)
+    {
+        printf("Invalid input! Please enter a number.\n");
+        clearInputBuffer();
+        return;
+    }
+    clearInputBuffer(); // Consume newline
+
+    int found = -1;
+    for (int i = 0; i < eventCount; i++)
+    {
+        if (events[i].id == id)
+        {
+            found = i;
+            break;
         }
     }
 
-    free_event_list(&lst);
-    return 0;
+    if (found == -1)
+    {
+        printf("Event with ID %d not found.\n", id);
+        return;
+    }
+
+    printf("Editing Event ID: %d\n", id);
+    printf("Leave field blank to keep current value.\n");
+
+    char input[100];
+
+    printf("Current title: %s\n", events[found].title);
+    printf("Enter new title: ");
+    fgets(input, sizeof(input), stdin);
+    input[strcspn(input, "\n")] = 0;
+    if (strlen(input) > 0)
+    {
+        strcpy(events[found].title, input);
+    }
+
+    printf("Current date: %s\n", events[found].date);
+    do
+    {
+        printf("Enter new date (YYYY-MM-DD): ");
+        fgets(input, sizeof(input), stdin);
+        input[strcspn(input, "\n")] = 0;
+        if (strlen(input) > 0)
+        {
+            if (validateDate(input))
+            {
+                strcpy(events[found].date, input);
+                break;
+            }
+        }
+        else
+        {
+            break;
+        }
+    } while (1);
+
+    printf("Current time: %s\n", events[found].time);
+    do
+    {
+        printf("Enter new time (HH:MM): ");
+        fgets(input, sizeof(input), stdin);
+        input[strcspn(input, "\n")] = 0;
+        if (strlen(input) > 0)
+        {
+            if (validateTime(input))
+            {
+                strcpy(events[found].time, input);
+                break;
+            }
+        }
+        else
+        {
+            break;
+        }
+    } while (1);
+
+    printf("Current location: %s\n", events[found].location);
+    printf("Enter new location: ");
+    fgets(input, sizeof(input), stdin);
+    input[strcspn(input, "\n")] = 0;
+    if (strlen(input) > 0)
+    {
+        strcpy(events[found].location, input);
+    }
+
+    printf("Current description: %s\n", events[found].description);
+    printf("Enter new description: ");
+    fgets(input, sizeof(input), stdin);
+    input[strcspn(input, "\n")] = 0;
+    if (strlen(input) > 0)
+    {
+        strcpy(events[found].description, input);
+    }
+
+    saveEvents();
+    printf("Event updated successfully.\n");
+}
+
+void deleteEvent()
+{
+    if (eventCount == 0)
+    {
+        printf("No events to delete.\n");
+        return;
+    }
+
+    int id;
+    printf("Enter event ID to delete: ");
+    if (scanf("%d", &id) != 1)
+    {
+        printf("Invalid input! Please enter a number.\n");
+        clearInputBuffer();
+        return;
+    }
+    clearInputBuffer(); // Consume newline
+
+    int found = -1;
+    for (int i = 0; i < eventCount; i++)
+    {
+        if (events[i].id == id)
+        {
+            found = i;
+            break;
+        }
+    }
+
+    if (found == -1)
+    {
+        printf("Event with ID %d not found.\n", id);
+        return;
+    }
+
+    // Confirm deletion
+    char confirm;
+    printf("Are you sure you want to delete event '%s'? (y/n): ", events[found].title);
+    if (scanf("%c", &confirm) != 1)
+    {
+        printf("Invalid input!\n");
+        clearInputBuffer();
+        return;
+    }
+    clearInputBuffer(); // Consume newline
+
+    if (confirm == 'y' || confirm == 'Y')
+    {
+        // Shift all events after the found index to the left
+        for (int i = found; i < eventCount - 1; i++)
+        {
+            events[i] = events[i + 1];
+        }
+        eventCount--;
+        saveEvents();
+        printf("Event deleted successfully.\n");
+    }
+    else
+    {
+        printf("Deletion cancelled.\n");
+    }
+}
+
+void searchEvents()
+{
+    if (eventCount == 0)
+    {
+        printf("No events to search.\n");
+        return;
+    }
+
+    int choice;
+    printf("Search by:\n");
+    printf("1. Date\n");
+    printf("2. Title\n");
+    printf("3. Location\n");
+    printf("Enter your choice: ");
+    if (scanf("%d", &choice) != 1)
+    {
+        printf("Invalid input! Please enter a number.\n");
+        clearInputBuffer();
+        return;
+    }
+    clearInputBuffer(); // Consume newline
+
+    char searchTerm[100];
+    int found = 0;
+
+    switch (choice)
+    {
+    case 1: // Search by date
+        printf("Enter date to search (YYYY-MM-DD): ");
+        fgets(searchTerm, sizeof(searchTerm), stdin);
+        searchTerm[strcspn(searchTerm, "\n")] = 0;
+
+        if (!validateDate(searchTerm))
+        {
+            printf("Invalid date format.\n");
+            return;
+        }
+
+        printf("\n=== Events on %s ===\n", searchTerm);
+        printf("ID    Title                Time   Location\n");
+        printf("------------------------------------------\n");
+        for (int i = 0; i < eventCount; i++)
+        {
+            if (strcmp(events[i].date, searchTerm) == 0)
+            {
+                printf("%-5d %-20s %-6s %s\n",
+                       events[i].id, events[i].title,
+                       events[i].time, events[i].location);
+                found = 1;
+            }
+        }
+        break;
+
+    case 2: // Search by title
+        printf("Enter title to search: ");
+        fgets(searchTerm, sizeof(searchTerm), stdin);
+        searchTerm[strcspn(searchTerm, "\n")] = 0;
+        toLowerCase(searchTerm);
+
+        printf("\n=== Events with '%s' in title ===\n", searchTerm);
+        printf("ID    Title                Date       Time   Location\n");
+        printf("----------------------------------------------------\n");
+        for (int i = 0; i < eventCount; i++)
+        {
+            char tempTitle[MAX_TITLE_LEN];
+            strcpy(tempTitle, events[i].title);
+            toLowerCase(tempTitle);
+
+            if (strstr(tempTitle, searchTerm) != NULL)
+            {
+                printf("%-5d %-20s %-10s %-6s %s\n",
+                       events[i].id, events[i].title, events[i].date,
+                       events[i].time, events[i].location);
+                found = 1;
+            }
+        }
+        break;
+
+    case 3: // Search by location
+        printf("Enter location to search: ");
+        fgets(searchTerm, sizeof(searchTerm), stdin);
+        searchTerm[strcspn(searchTerm, "\n")] = 0;
+        toLowerCase(searchTerm);
+
+        printf("\n=== Events in '%s' ===\n", searchTerm);
+        printf("ID    Title                Date       Time   Location\n");
+        printf("----------------------------------------------------\n");
+        for (int i = 0; i < eventCount; i++)
+        {
+            char tempLocation[MAX_LOCATION_LEN];
+            strcpy(tempLocation, events[i].location);
+            toLowerCase(tempLocation);
+
+            if (strstr(tempLocation, searchTerm) != NULL)
+            {
+                printf("%-5d %-20s %-10s %-6s %s\n",
+                       events[i].id, events[i].title, events[i].date,
+                       events[i].time, events[i].location);
+                found = 1;
+            }
+        }
+        break;
+
+    default:
+        printf("Invalid choice.\n");
+        return;
+    }
+
+    if (!found)
+    {
+        printf("No events found matching your search.\n");
+    }
+}
+
+void saveEvents()
+{
+    FILE *file = fopen(FILENAME, "w");
+    if (file == NULL)
+    {
+        printf("Error opening file for writing.\n");
+        return;
+    }
+
+    for (int i = 0; i < eventCount; i++)
+    {
+        fprintf(file, "%d|%s|%s|%s|%s|%s\n",
+                events[i].id, events[i].title, events[i].date,
+                events[i].time, events[i].location, events[i].description);
+    }
+
+    fclose(file);
+}
+
+void loadEvents()
+{
+    FILE *file = fopen(FILENAME, "r");
+    if (file == NULL)
+    {
+        printf("No existing events file found. Starting fresh.\n");
+        return;
+    }
+
+    eventCount = 0;
+    char line[500];
+
+    while (fgets(line, sizeof(line), file) && eventCount < MAX_EVENTS)
+    {
+        line[strcspn(line, "\n")] = 0; // Remove newline
+
+        char *token = strtok(line, "|");
+        if (token == NULL)
+            continue;
+
+        events[eventCount].id = atoi(token);
+
+        token = strtok(NULL, "|");
+        if (token)
+            strcpy(events[eventCount].title, token);
+
+        token = strtok(NULL, "|");
+        if (token)
+            strcpy(events[eventCount].date, token);
+
+        token = strtok(NULL, "|");
+        if (token)
+            strcpy(events[eventCount].time, token);
+
+        token = strtok(NULL, "|");
+        if (token)
+            strcpy(events[eventCount].location, token);
+
+        token = strtok(NULL, "|");
+        if (token)
+            strcpy(events[eventCount].description, token);
+
+        eventCount++;
+    }
+
+    fclose(file);
+    printf("Loaded %d events from file.\n", eventCount);
+}
+
+void sortEvents()
+{
+    if (eventCount == 0)
+    {
+        printf("No events to sort.\n");
+        return;
+    }
+
+    int choice;
+    printf("Sort by:\n");
+    printf("1. Date/Time\n");
+    printf("2. Title (Alphabetical)\n");
+    printf("3. Location\n");
+    printf("Enter your choice: ");
+    if (scanf("%d", &choice) != 1)
+    {
+        printf("Invalid input! Please enter a number.\n");
+        clearInputBuffer();
+        return;
+    }
+    clearInputBuffer(); // Consume newline
+
+    // Bubble sort implementation
+    for (int i = 0; i < eventCount - 1; i++)
+    {
+        for (int j = 0; j < eventCount - i - 1; j++)
+        {
+            int swap = 0;
+
+            switch (choice)
+            {
+            case 1: // Sort by date/time
+                if (compareDates(events[j].date, events[j + 1].date) > 0)
+                {
+                    swap = 1;
+                }
+                else if (compareDates(events[j].date, events[j + 1].date) == 0)
+                {
+                    // If dates are equal, compare times
+                    if (strcmp(events[j].time, events[j + 1].time) > 0)
+                    {
+                        swap = 1;
+                    }
+                }
+                break;
+
+            case 2: // Sort by title
+                if (strcasecmp(events[j].title, events[j + 1].title) > 0)
+                {
+                    swap = 1;
+                }
+                break;
+
+            case 3: // Sort by location
+                if (strcasecmp(events[j].location, events[j + 1].location) > 0)
+                {
+                    swap = 1;
+                }
+                break;
+
+            default:
+                printf("Invalid choice.\n");
+                return;
+            }
+
+            if (swap)
+            {
+                Event temp = events[j];
+                events[j] = events[j + 1];
+                events[j + 1] = temp;
+            }
+        }
+    }
+
+    saveEvents();
+    printf("Events sorted successfully.\n");
+    viewEvents();
+}
+
+void eventSummary()
+{
+    printf("\n=== Event Summary ===\n");
+    printf("Total number of events: %d\n", eventCount);
+
+    if (eventCount == 0)
+        return;
+
+    // Count events by year, month, and day
+    int yearCount[100] = {0}; // Assuming events within 100 years
+    int monthCount[13] = {0}; // Index 1-12 for months
+    int dayCount[32] = {0};   // Index 1-31 for days
+
+    int currentYear, currentMonth, currentDay;
+    for (int i = 0; i < eventCount; i++)
+    {
+        sscanf(events[i].date, "%d-%d-%d", &currentYear, &currentMonth, &currentDay);
+
+        // Adjust year index (assuming events between 2000-2099)
+        int yearIndex = currentYear - 2000;
+        if (yearIndex >= 0 && yearIndex < 100)
+        {
+            yearCount[yearIndex]++;
+        }
+
+        if (currentMonth >= 1 && currentMonth <= 12)
+        {
+            monthCount[currentMonth]++;
+        }
+
+        if (currentDay >= 1 && currentDay <= 31)
+        {
+            dayCount[currentDay]++;
+        }
+    }
+
+    // Display events by year
+    printf("\nEvents by year:\n");
+    for (int i = 0; i < 100; i++)
+    {
+        if (yearCount[i] > 0)
+        {
+            printf("  %d: %d events\n", 2000 + i, yearCount[i]);
+        }
+    }
+
+    // Display events by month
+    printf("\nEvents by month:\n");
+    char *months[] = {"", "January", "February", "March", "April", "May", "June",
+                      "July", "August", "September", "October", "November", "December"};
+    for (int i = 1; i <= 12; i++)
+    {
+        if (monthCount[i] > 0)
+        {
+            printf("  %s: %d events\n", months[i], monthCount[i]);
+        }
+    }
+
+    // Display events by day
+    printf("\nEvents by day:\n");
+    for (int i = 1; i <= 31; i++)
+    {
+        if (dayCount[i] > 0)
+        {
+            printf("  %d: %d events\n", i, dayCount[i]);
+        }
+    }
+}
+
+int validateDate(const char *date)
+{
+    if (strlen(date) != 10)
+        return 0;
+    if (date[4] != '-' || date[7] != '-')
+        return 0;
+
+    int year, month, day;
+    if (sscanf(date, "%d-%d-%d", &year, &month, &day) != 3)
+        return 0;
+
+    return isValidDate(day, month, year);
+}
+
+int isValidDate(int day, int month, int year)
+{
+    if (year < 2000 || year > 2100)
+        return 0;
+    if (month < 1 || month > 12)
+        return 0;
+    if (day < 1 || day > 31)
+        return 0;
+
+    // Check for months with 30 days
+    if ((month == 4 || month == 6 || month == 9 || month == 11) && day > 30)
+        return 0;
+
+    // Check for February
+    if (month == 2)
+    {
+        if (isLeapYear(year))
+        {
+            if (day > 29)
+                return 0;
+        }
+        else
+        {
+            if (day > 28)
+                return 0;
+        }
+    }
+
+    return 1;
+}
+
+int isLeapYear(int year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+int validateTime(const char *time)
+{
+    if (strlen(time) != 5)
+        return 0;
+    if (time[2] != ':')
+        return 0;
+
+    int hour, minute;
+    if (sscanf(time, "%d:%d", &hour, &minute) != 2)
+        return 0;
+
+    if (hour < 0 || hour > 23)
+        return 0;
+    if (minute < 0 || minute > 59)
+        return 0;
+
+    return 1;
+}
+
+int compareDates(const char *date1, const char *date2)
+{
+    int y1, m1, d1, y2, m2, d2;
+    sscanf(date1, "%d-%d-%d", &y1, &m1, &d1);
+    sscanf(date2, "%d-%d-%d", &y2, &m2, &d2);
+
+    if (y1 != y2)
+        return y1 - y2;
+    if (m1 != m2)
+        return m1 - m2;
+    return d1 - d2;
+}
+
+void toLowerCase(char *str)
+{
+    for (int i = 0; str[i]; i++)
+    {
+        str[i] = tolower(str[i]);
+    }
 }

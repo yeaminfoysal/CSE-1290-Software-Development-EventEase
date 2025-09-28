@@ -9,23 +9,22 @@
 #define MAX_LOCATION_LEN 100
 #define MAX_DESCRIPTION_LEN 200
 #define FILENAME "events.txt"
-#define ADMIN_PASSWORD "admin123" // Default admin password
+#define ADMIN_PASSWORD "admin123"
 
 typedef struct
 {
     int id;
     char title[MAX_TITLE_LEN];
-    char date[11]; // YYYY-MM-DD format
-    char time[6];  // HH:MM format
+    char date[11];
+    char time[6];
     char description[MAX_DESCRIPTION_LEN];
     char location[MAX_LOCATION_LEN];
 } Event;
 
 Event events[MAX_EVENTS];
 int eventCount = 0;
-int isAdmin = 0; // 0 for guest, 1 for admin
+int isAdmin = 0;
 
-// Function prototypes
 void login();
 void displayMenu();
 void addEvent();
@@ -61,7 +60,7 @@ int main()
             clearInputBuffer();
             continue;
         }
-        clearInputBuffer(); // Consume newline and any extra characters
+        clearInputBuffer();
 
         switch (choice)
         {
@@ -118,7 +117,8 @@ int main()
 void clearInputBuffer()
 {
     int c;
-    while ((c = getchar()) != '\n' && c != EOF);
+    while ((c = getchar()) != '\n' && c != EOF)
+        ;
 }
 
 void login()
@@ -592,6 +592,75 @@ void loadEvents()
     printf("Loaded %d events from file.\n", eventCount);
 }
 
+void eventSummary()
+{
+    printf("\n=== Event Summary ===\n");
+    printf("Total number of events: %d\n", eventCount);
+
+    if (eventCount == 0)
+        return;
+
+    // Count events by year, month, and day
+    int yearCount[100] = {0}; // Assuming events within 100 years
+    int monthCount[13] = {0}; // Index 1-12 for months
+    int dayCount[32] = {0};   // Index 1-31 for days
+
+    int currentYear, currentMonth, currentDay;
+    for (int i = 0; i < eventCount; i++)
+    {
+        sscanf(events[i].date, "%d-%d-%d", &currentYear, &currentMonth, &currentDay);
+
+        // Adjust year index (assuming events between 2000-2099)
+        int yearIndex = currentYear - 2000;
+        if (yearIndex >= 0 && yearIndex < 100)
+        {
+            yearCount[yearIndex]++;
+        }
+
+        if (currentMonth >= 1 && currentMonth <= 12)
+        {
+            monthCount[currentMonth]++;
+        }
+
+        if (currentDay >= 1 && currentDay <= 31)
+        {
+            dayCount[currentDay]++;
+        }
+    }
+
+    // Display events by year
+    printf("\nEvents by year:\n");
+    for (int i = 0; i < 100; i++)
+    {
+        if (yearCount[i] > 0)
+        {
+            printf("  %d: %d events\n", 2000 + i, yearCount[i]);
+        }
+    }
+
+    // Display events by month
+    printf("\nEvents by month:\n");
+    char *months[] = {"", "January", "February", "March", "April", "May", "June",
+                      "July", "August", "September", "October", "November", "December"};
+    for (int i = 1; i <= 12; i++)
+    {
+        if (monthCount[i] > 0)
+        {
+            printf("  %s: %d events\n", months[i], monthCount[i]);
+        }
+    }
+
+    // Display events by day
+    printf("\nEvents by day:\n");
+    for (int i = 1; i <= 31; i++)
+    {
+        if (dayCount[i] > 0)
+        {
+            printf("  %d: %d events\n", i, dayCount[i]);
+        }
+    }
+}
+
 void sortEvents()
 {
     if (eventCount == 0)
@@ -669,75 +738,6 @@ void sortEvents()
     saveEvents();
     printf("Events sorted successfully.\n");
     viewEvents();
-}
-
-void eventSummary()
-{
-    printf("\n=== Event Summary ===\n");
-    printf("Total number of events: %d\n", eventCount);
-
-    if (eventCount == 0)
-        return;
-
-    // Count events by year, month, and day
-    int yearCount[100] = {0}; // Assuming events within 100 years
-    int monthCount[13] = {0}; // Index 1-12 for months
-    int dayCount[32] = {0};   // Index 1-31 for days
-
-    int currentYear, currentMonth, currentDay;
-    for (int i = 0; i < eventCount; i++)
-    {
-        sscanf(events[i].date, "%d-%d-%d", &currentYear, &currentMonth, &currentDay);
-
-        // Adjust year index (assuming events between 2000-2099)
-        int yearIndex = currentYear - 2000;
-        if (yearIndex >= 0 && yearIndex < 100)
-        {
-            yearCount[yearIndex]++;
-        }
-
-        if (currentMonth >= 1 && currentMonth <= 12)
-        {
-            monthCount[currentMonth]++;
-        }
-
-        if (currentDay >= 1 && currentDay <= 31)
-        {
-            dayCount[currentDay]++;
-        }
-    }
-
-    // Display events by year
-    printf("\nEvents by year:\n");
-    for (int i = 0; i < 100; i++)
-    {
-        if (yearCount[i] > 0)
-        {
-            printf("  %d: %d events\n", 2000 + i, yearCount[i]);
-        }
-    }
-
-    // Display events by month
-    printf("\nEvents by month:\n");
-    char *months[] = {"", "January", "February", "March", "April", "May", "June",
-                      "July", "August", "September", "October", "November", "December"};
-    for (int i = 1; i <= 12; i++)
-    {
-        if (monthCount[i] > 0)
-        {
-            printf("  %s: %d events\n", months[i], monthCount[i]);
-        }
-    }
-
-    // Display events by day
-    printf("\nEvents by day:\n");
-    for (int i = 1; i <= 31; i++)
-    {
-        if (dayCount[i] > 0)
-        {
-            printf("  %d: %d events\n", i, dayCount[i]);
-        }
-    }
 }
 
 int validateDate(const char *date)

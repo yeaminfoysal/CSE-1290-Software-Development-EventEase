@@ -31,14 +31,14 @@ void addEvent();
 void viewEvents();
 void editEvent();
 void deleteEvent();
-void searchEvents();
 void saveEvents();
 void loadEvents();
-void sortEvents();
+void searchEvents();
 void eventSummary();
 int validateDate(const char *date);
 int validateTime(const char *time);
-int compareDates(const char *date1, const char *date2);
+// void sortEvents();
+// int compareDates(const char *date1, const char *date2);
 void toLowerCase(char *str);
 int isLeapYear(int year);
 int isValidDate(int day, int month, int year);
@@ -88,19 +88,19 @@ int main()
         case 5:
             searchEvents();
             break;
+        // case 6:
+        //     if (isAdmin)
+        //         sortEvents();
+        //     else
+        //         printf("Access denied! Admin only feature.\n");
+        //     break;
         case 6:
-            if (isAdmin)
-                sortEvents();
-            else
-                printf("Access denied! Admin only feature.\n");
-            break;
-        case 7:
             eventSummary();
             break;
-        case 8:
+        case 7:
             login();
             break;
-        case 9:
+        case 8:
             saveEvents();
             printf("Exiting program. Goodbye!\n");
             break;
@@ -149,10 +149,9 @@ void displayMenu()
     printf("3. Edit an Event (Admin Only)\n");
     printf("4. Delete an Event (Admin Only)\n");
     printf("5. Search Events\n");
-    printf("6. Sort Events (Admin Only)\n");
-    printf("7. Event Summary\n");
-    printf("8. Switch User\n");
-    printf("9. Exit\n");
+    printf("6. Event Summary\n");
+    printf("7. Switch User\n");
+    printf("8. Exit\n");
 }
 
 void addEvent()
@@ -661,6 +660,98 @@ void eventSummary()
     }
 }
 
+int validateDate(const char *date)
+{
+    if (strlen(date) != 10)
+        return 0;
+    if (date[4] != '-' || date[7] != '-')
+        return 0;
+
+    int year, month, day;
+    if (sscanf(date, "%d-%d-%d", &year, &month, &day) != 3)
+        return 0;
+
+    return isValidDate(day, month, year);
+}
+
+int isValidDate(int day, int month, int year)
+{
+    if (year < 2000 || year > 2100)
+        return 0;
+    if (month < 1 || month > 12)
+        return 0;
+    if (day < 1 || day > 31)
+        return 0;
+
+    // Check for months with 30 days
+    if ((month == 4 || month == 6 || month == 9 || month == 11) && day > 30)
+        return 0;
+
+    // Check for February
+    if (month == 2)
+    {
+        if (isLeapYear(year))
+        {
+            if (day > 29)
+                return 0;
+        }
+        else
+        {
+            if (day > 28)
+                return 0;
+        }
+    }
+
+    return 1;
+}
+
+int isLeapYear(int year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+int validateTime(const char *time)
+{
+    if (strlen(time) != 5)
+        return 0;
+    if (time[2] != ':')
+        return 0;
+
+    int hour, minute;
+    if (sscanf(time, "%d:%d", &hour, &minute) != 2)
+        return 0;
+
+    if (hour < 0 || hour > 23)
+        return 0;
+    if (minute < 0 || minute > 59)
+        return 0;
+
+    return 1;
+}
+
+void toLowerCase(char *str)
+{
+    for (int i = 0; str[i]; i++)
+    {
+        str[i] = tolower(str[i]);
+    }
+}
+
+/*
+
+int compareDates(const char *date1, const char *date2)
+{
+    int y1, m1, d1, y2, m2, d2;
+    sscanf(date1, "%d-%d-%d", &y1, &m1, &d1);
+    sscanf(date2, "%d-%d-%d", &y2, &m2, &d2);
+
+    if (y1 != y2)
+        return y1 - y2;
+    if (m1 != m2)
+        return m1 - m2;
+    return d1 - d2;
+}
+
 void sortEvents()
 {
     if (eventCount == 0)
@@ -740,92 +831,4 @@ void sortEvents()
     viewEvents();
 }
 
-int validateDate(const char *date)
-{
-    if (strlen(date) != 10)
-        return 0;
-    if (date[4] != '-' || date[7] != '-')
-        return 0;
-
-    int year, month, day;
-    if (sscanf(date, "%d-%d-%d", &year, &month, &day) != 3)
-        return 0;
-
-    return isValidDate(day, month, year);
-}
-
-int isValidDate(int day, int month, int year)
-{
-    if (year < 2000 || year > 2100)
-        return 0;
-    if (month < 1 || month > 12)
-        return 0;
-    if (day < 1 || day > 31)
-        return 0;
-
-    // Check for months with 30 days
-    if ((month == 4 || month == 6 || month == 9 || month == 11) && day > 30)
-        return 0;
-
-    // Check for February
-    if (month == 2)
-    {
-        if (isLeapYear(year))
-        {
-            if (day > 29)
-                return 0;
-        }
-        else
-        {
-            if (day > 28)
-                return 0;
-        }
-    }
-
-    return 1;
-}
-
-int isLeapYear(int year)
-{
-    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-}
-
-int validateTime(const char *time)
-{
-    if (strlen(time) != 5)
-        return 0;
-    if (time[2] != ':')
-        return 0;
-
-    int hour, minute;
-    if (sscanf(time, "%d:%d", &hour, &minute) != 2)
-        return 0;
-
-    if (hour < 0 || hour > 23)
-        return 0;
-    if (minute < 0 || minute > 59)
-        return 0;
-
-    return 1;
-}
-
-int compareDates(const char *date1, const char *date2)
-{
-    int y1, m1, d1, y2, m2, d2;
-    sscanf(date1, "%d-%d-%d", &y1, &m1, &d1);
-    sscanf(date2, "%d-%d-%d", &y2, &m2, &d2);
-
-    if (y1 != y2)
-        return y1 - y2;
-    if (m1 != m2)
-        return m1 - m2;
-    return d1 - d2;
-}
-
-void toLowerCase(char *str)
-{
-    for (int i = 0; str[i]; i++)
-    {
-        str[i] = tolower(str[i]);
-    }
-}
+*/
